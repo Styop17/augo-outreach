@@ -1,0 +1,5 @@
+exa-py
+anthropic
+requests
+python-dotenv
+streamlit
