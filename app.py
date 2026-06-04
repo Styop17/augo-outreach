@@ -20,6 +20,17 @@ from pipeline import (
 
 st.set_page_config(page_title="augo Outreach", page_icon="🏃", layout="wide")
 
+if not st.session_state.get("authenticated"):
+    st.title("augo Coach Outreach")
+    password = st.text_input("Password", type="password")
+    if st.button("Enter"):
+        if password == st.secrets.get("APP_PASSWORD", ""):
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Wrong password")
+    st.stop()
+
 st.title("augo Coach Outreach")
 st.caption("Find endurance coaches, draft personalised messages, export to CSV.")
 
