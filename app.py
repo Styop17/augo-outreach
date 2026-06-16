@@ -1,22 +1,15 @@
 import streamlit as st
-import csv
-import io
-import re
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Streamlit Cloud stores secrets in st.secrets; inject them as env vars
-# so pipeline.py's os.getenv() calls work in both local and cloud environments
-for _key in ["EXA_API_KEY", "ANTHROPIC_API_KEY"]:
+for _key in ["EXA_API_KEY", "ANTHROPIC_API_KEY", "ATTIO_API_KEY"]:
     if _key in st.secrets and not os.environ.get(_key):
         os.environ[_key] = st.secrets[_key]
 
-from pipeline import (
-    find_coaches, research_coach, draft_email, draft_dm,
-    load_seen, save_seen, seen_key,
-)
+from pipeline import find_coaches, fetch_page_content, research_coach, draft_email, draft_dm, country_from_query
+from attio import get_existing_domains, push_coach
 
 st.set_page_config(page_title="augo Outreach", page_icon="🏃", layout="wide")
 
@@ -46,56 +39,81 @@ CHANNEL_BADGE = {
 
 
 def run_pipeline(query, limit):
-    seen    = load_seen()
     results = []
 
     status = st.status("Finding coaches...", expanded=True)
 
     with status:
-        raw_coaches = find_coaches(query, limit)
-        st.write(f"Found {len(raw_coaches)} pages — researching each one...")
+        country_code = country_from_query(query)
+        st.write("Checking Attio for already-found coaches...")
+        existing_domains = get_existing_domains()
+        if existing_domains:
+            st.write(f"Excluding {len(existing_domains)} domains already in Attio.")
+
+        candidates = find_coaches(query, limit, extra_exclude=existing_domains)
+        st.write(f"Found {len(candidates)} candidate pages — fetching until {limit} coaches found...")
 
         progress = st.progress(0)
+        coaches_found = 0
 
-        for i, page in enumerate(raw_coaches):
-            coach_data = research_coach(page, seen)
-            progress.progress((i + 1) / len(raw_coaches))
+        for candidate in candidates:
+            if coaches_found >= limit:
+                break
 
-            if not coach_data:
+            page = fetch_page_content(candidate)
+            if not page:
                 continue
 
-            channel = coach_data.get("channel", "")
-
-            try:
-                if channel == "email":
-                    draft   = draft_email(coach_data)
-                    subject = draft.get("subject", "")
-                    message = draft.get("message", "")
-                else:
-                    draft   = draft_dm(coach_data)
-                    subject = ""
-                    message = draft.get("dm_message", "")
-            except Exception as e:
-                st.warning(f"Could not draft message for {coach_data['name']}: {e}")
+            coaches_from_page = research_coach(page)
+            if not coaches_from_page:
                 continue
 
-            seen.add(seen_key(coach_data["name"], coach_data.get("email", "")))
-            save_seen(seen)
+            for coach_data in coaches_from_page:
+                coach_data["country_code"] = country_code
+                if coaches_found >= limit:
+                    break
 
-            results.append({
-                "name":           coach_data["name"],
-                "channel":        channel,
-                "instagram_url":  coach_data.get("instagram_url", ""),
-                "phone":          coach_data.get("phone", ""),
-                "email":          coach_data.get("email", ""),
-                "facebook_url":   coach_data.get("facebook_url", ""),
-                "website":        coach_data.get("website", ""),
-                "research_notes": draft.get("research_notes", ""),
-                "subject":        subject,
-                "message":        message,
-            })
+                coaches_found += 1
+                progress.progress(min(coaches_found / limit, 1.0))
 
-        status.update(label=f"Done — {len(results)} coaches processed", state="complete")
+                channel = coach_data.get("channel", "")
+
+                try:
+                    if channel == "email":
+                        draft   = draft_email(coach_data)
+                        subject = draft.get("subject", "")
+                        message = draft.get("message", "")
+                    else:
+                        draft   = draft_dm(coach_data)
+                        subject = ""
+                        message = draft.get("dm_message", "")
+                except Exception as e:
+                    st.warning(f"Could not draft message for {coach_data['name']}: {e}")
+                    continue
+
+                research_notes = draft.get("research_notes", "")
+                ok = push_coach(coach_data, message, subject=subject, research_notes=research_notes)
+                if not ok:
+                    st.warning(f"Attio push failed for {coach_data['name']}")
+
+                results.append({
+                    "name":                 coach_data["name"],
+                    "entity_type":          coach_data.get("entity_type", "coach"),
+                    "athlete_count_signal": coach_data.get("athlete_count_signal", "unknown"),
+                    "tools_mentioned":      ", ".join(coach_data.get("tools_mentioned", [])),
+                    "channel":              channel,
+                    "instagram_url":        coach_data.get("instagram_url", ""),
+                    "phone":                coach_data.get("phone", ""),
+                    "email":                coach_data.get("email", ""),
+                    "facebook_url":         coach_data.get("facebook_url", ""),
+                    "website":              coach_data.get("website", ""),
+                    "research_notes":       research_notes,
+                    "subject":              subject,
+                    "message":              message,
+                    "attio_pushed":         ok,
+                })
+
+        status.update(label=f"Done — {len(results)} coaches pushed to Attio", state="complete")
 
     return results
 
@@ -141,18 +159,6 @@ for i, r in enumerate(st.session_state.results):
             )
 
 if st.session_state.results:
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=st.session_state.results[0].keys())
-    writer.writeheader()
-    writer.writerows(st.session_state.results)
-
-    slug = re.sub(r"[\s]+", "_", re.sub(r"[^\w\s-]", "", query.lower()).strip())
-
+    pushed = sum(1 for r in st.session_state.results if r.get("attio_pushed"))
     st.divider()
-    st.download_button(
-        "⬇️ Download CSV",
-        data=output.getvalue(),
-        file_name=f"{slug}.csv",
-        mime="text/csv",
-        type="primary",
-    )
+    st.success(f"{pushed} / {len(st.session_state.results)} coaches pushed to Attio Sales Pipeline")

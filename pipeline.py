@@ -19,6 +19,21 @@ import requests
 from dotenv import load_dotenv
 import anthropic
 
+def country_from_query(query: str) -> str:
+    """Return ISO 3166-1 alpha-2 country code inferred from the search query."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=8,
+        messages=[{"role": "user", "content":
+            f"What country is implied by this search query? "
+            f"Reply with only the ISO 3166-1 alpha-2 country code (e.g. CH, NL, DE). "
+            f"If no country can be inferred, reply with an empty string.\n\nQuery: {query}"
+        }]
+    )
+    code = resp.content[0].text.strip().upper()
+    return code if len(code) == 2 and code.isalpha() else ""
+
 load_dotenv()
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
@@ -44,58 +59,64 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 SENDER_NAME = "Bruna"
 SENDER_ROLE = "co-founder of augo"
-AUGO_PITCH  = (
-    "augo is an intelligent assistant for endurance coaches that brings "
-    "athlete communication, session data, and training feedback into one place — "
-    "so coaches spend less time searching through messages and more time coaching."
+
+# One-liner used in DMs/emails where space is tight
+AUGO_PITCH_SHORT = (
+    "augo is a tool that tells endurance coaches which of their athletes needs "
+    "attention right now — so they stop losing time to admin and start coaching "
+    "the way they used to when they had five athletes."
 )
 
-SEEN_FILE    = "seen.json"
+# Fuller version used in email body where there's more room
+AUGO_PITCH_FULL = (
+    "augo is the intelligence layer for human endurance coaching. "
+    "It brings together athlete messages, workout data, and session feedback in "
+    "one place and surfaces who needs attention — replacing the "
+    "WhatsApp-TrainingPeaks-memory stack coaches currently run on. "
+    "It sits next to TrainingPeaks, not instead of it. augo does what TP never will: "
+    "tell you which of your athletes needs you right now."
+)
+
+AUGO_PITCH = AUGO_PITCH_SHORT  # kept for backward compat with test output
+
 SKIP_HANDLES = {"p", "explore", "accounts", "stories", "reel", "reels", "tv",
                 "sharer", "share", "pages", "groups"}
 
 
-# ── Seen / Deduplication ───────────────────────────────────────────────────────
-
-def load_seen() -> set:
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE) as f:
-            return set(json.load(f))
-    return set()
-
-def save_seen(seen: set):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(list(seen), f)
-
-def seen_key(name: str, email: str) -> str:
-    if email:
-        return email.lower()
-    tokens = name.lower().split()
-    return " ".join(tokens[:2]) if len(tokens) >= 2 else name.lower()
-
-
 # ── Phase 1: Discovery ─────────────────────────────────────────────────────────
 
-def find_coaches(query: str, limit: int):
+def _exa():
     from exa_py import Exa
-    exa = Exa(EXA_API_KEY)
+    return Exa(EXA_API_KEY)
+
+
+def find_coaches(query: str, target: int, extra_exclude: list = None):
+    """URL-only search returning up to target*3 candidates (no content fetched yet)."""
+    exclude = [
+        "instagram.com", "strava.com", "linkedin.com",
+        "facebook.com", "twitter.com", "youtube.com",
+        "trainingpeaks.com", "tiktok.com",
+    ]
+    if extra_exclude:
+        exclude += extra_exclude
 
     print(f"\nSearching for coaches...")
     print(f"  Query: {query}\n")
 
-    results = exa.search(
+    results = _exa().search(
         query,
-        num_results=limit,
-        contents={"text": True},
-        exclude_domains=[
-            "instagram.com", "strava.com", "linkedin.com",
-            "facebook.com", "twitter.com", "youtube.com",
-            "trainingpeaks.com", "tiktok.com",
-        ],
+        num_results=min(target * 3, 50),
+        exclude_domains=exclude,
     )
 
-    print(f"  Found {len(results.results)} pages\n")
+    print(f"  Found {len(results.results)} candidate pages\n")
     return results.results
+
+
+def fetch_page_content(page):
+    """Fetch text content for a single Exa result."""
+    fetched = _exa().get_contents([page.id], text=True)
+    return fetched.results[0] if fetched.results else None
 
 
 # ── Phase 2: Contact Finding ───────────────────────────────────────────────────
@@ -192,19 +213,28 @@ def extract_coach_info(page_text: str, page_url: str) -> dict:
         model="claude-haiku-4-5-20251001",
         max_tokens=512,
         messages=[{"role": "user", "content": f"""
-Read this webpage content and extract coach information.
+Read this webpage content and extract information about the entity.
 
 URL: {page_url}
 CONTENT: {text_sample}
 
 Return ONLY valid JSON, no markdown:
 {{
-  "is_coach": true or false,
-  "name": "full name or empty string",
-  "website": "website URL or empty string"
+  "entity_type": "coach" or "club" or "neither",
+  "name": "full name or organisation name, or empty string",
+  "website": "website URL or empty string",
+  "athlete_count_signal": "e.g. '~15 athletes', '40+ athletes', 'unknown'",
+  "tools_mentioned": ["TrainingPeaks", "WhatsApp", "Garmin", "Strava", "Final Surge", "Excel"],
+  "coaches": []
 }}
 
-Only set is_coach to true if this page is clearly about a personal endurance coach who coaches individual athletes.
+Definitions:
+- "coach": a personal endurance coach who coaches individual athletes (triathlon, running, cycling, swimming, etc.)
+- "club": a sports club or association for endurance athletes (triathlon club, running club, cycling club, etc.)
+- "neither": anything else (directory, shop, news site, etc.)
+- athlete_count_signal: any mention of how many athletes or members they work with; use "unknown" if not mentioned
+- tools_mentioned: only tools explicitly named on the page; empty list if none found
+- coaches: only populated when entity_type is "club" — list of named individuals found on the page (max 3), each as {{"name": "...", "role": "head coach / founder / coach"}}. Empty list if entity_type is not "club" or no individuals are named.
 """}]
     )
     text = response.content[0].text.strip()
@@ -219,47 +249,65 @@ Only set is_coach to true if this page is clearly about a personal endurance coa
     return parsed
 
 
-def research_coach(page, seen: set) -> dict:
+def research_coach(page) -> list:
     page_text = page.text or ""
     page_url  = page.url or ""
 
     info = extract_coach_info(page_text, page_url)
 
-    if not info.get("is_coach") or not info.get("name"):
-        return {}
+    entity_type = info.get("entity_type", "neither")
+    if entity_type == "neither" or not info.get("name"):
+        return []
 
     name    = info.get("name", "")
     website = info.get("website", page_url)
-
-    if seen_key(name, "") in seen:
-        print(f"  Skipping {name} — already processed in a previous run")
-        return {}
-
     contact = find_contact_info(page_text, website)
 
-    return {
-        "name":          name,
-        "website":       website,
-        "website_text":  page_text[:3000],
-        "channel":       contact["channel"],
-        "instagram_url": contact["instagram_url"],
-        "facebook_url":  contact["facebook_url"],
-        "phone":         contact["phone"],
-        "email":         contact["email"],
+    shared = {
+        "athlete_count_signal": info.get("athlete_count_signal", "unknown"),
+        "tools_mentioned":      info.get("tools_mentioned", []),
+        "website":              website,
+        "website_text":         page_text[:3000],
+        "channel":              contact["channel"],
+        "instagram_url":        contact["instagram_url"],
+        "facebook_url":         contact["facebook_url"],
+        "phone":                contact["phone"],
+        "email":                contact["email"],
     }
+
+    if entity_type == "club":
+        named_coaches = info.get("coaches", [])
+        if not named_coaches:
+            return []
+        return [
+            {"name": c["name"], "role": c.get("role", ""), "club_name": name,
+             "entity_type": "coach", **shared}
+            for c in named_coaches[:3]
+        ]
+
+    return [{"name": name, "entity_type": "coach", **shared}]
 
 
 # ── Phase 4: Message Drafting ──────────────────────────────────────────────────
 
-WRITING_RULES = """
+def _writing_rules() -> str:
+    from datetime import date
+    today = date.today().strftime("%B %d, %Y")
+    return f"""
 WRITING RULES — STRICT:
 - Never use an em dash (—) anywhere
 - Never start with "Noticed", "I noticed", "I came across", "I stumbled upon"
 - Never use: seamlessly, leverage, revolutionize, game-changer, cutting-edge, innovative,
   transform, elevate, streamline, coaches like you, stands out, empower, unlock,
-  data points, juggling, valuable, insights, holistic, journey, dedicated, passionate
+  data points, juggling, valuable, insights, holistic, journey, dedicated, passionate,
+  efficiency, productivity, optimize, scale your business, game changer
+- Never say augo replaces TrainingPeaks — it sits next to TP, not instead of it
+- Never call augo an "AI coach" — it empowers the human coach, it does not replace them
+- Bruna is a runner and running coach herself — write peer to peer, not sales pitch
 - No corporate language, no AI-sounding phrases
 - Write like a real person, not a marketer
+- Today is {today}. Never reference a specific race, event, or date that has already passed.
+  Only use timeless facts: who they coach, their approach, their results history, ongoing traits.
 """
 
 def _call_claude(prompt: str) -> str:
@@ -281,36 +329,76 @@ def _clean(text: str) -> str:
     return text.replace("—", "-").replace("–", "-")
 
 def draft_dm(coach: dict) -> dict:
+    is_club = coach.get("entity_type") == "club"
+    recipient_desc = "sports club" if is_club else "coach"
+    athlete_count  = coach.get("athlete_count_signal", "unknown")
+    tools          = coach.get("tools_mentioned", [])
+    tools_str      = ", ".join(tools) if tools else "not mentioned"
+
+    if is_club:
+        pain_context = (
+            f"This is a sports club (athlete count: {athlete_count}). "
+            "Clubs typically deal with fragmented communication across many members, "
+            "coaches juggling WhatsApp groups, and no single view of who needs attention."
+        )
+        cta_examples = (
+            "curious how your coaches currently keep track of all that?"
+            " / "
+            "what does a typical race week look like for your coaching team?"
+        )
+    else:
+        pain_context = (
+            f"This coach has approximately {athlete_count} athletes. "
+            f"Tools visible on their site: {tools_str}. "
+            "Coaches at this scale typically spend 4-10h/week switching between WhatsApp, "
+            "TrainingPeaks, and spreadsheets just to know who needs attention — "
+            "and they've often quietly capped their roster to protect quality."
+        )
+        cta_examples = (
+            "curious what your Monday morning looks like?"
+            " / "
+            "what does your week look like when you're managing all of that?"
+        )
+
     prompt = f"""
 You are writing a cold Instagram DM on behalf of {SENDER_NAME}, {SENDER_ROLE}.
 
-{AUGO_PITCH}
+WHAT AUGO DOES:
+{AUGO_PITCH_SHORT}
 
-COACH DETAILS:
+KEY POSITIONING:
+- augo tells coaches WHICH athlete needs attention right now — that's the core value
+- It sits next to TrainingPeaks, it does NOT replace it
+- It is NOT an AI coach — it empowers the human coach
+- The problem it solves: coaches cap at 5-30 athletes to protect quality because admin eats their time
+
+CONTEXT ABOUT THIS {recipient_desc.upper()}:
 Name: {coach['name']}
+{pain_context}
 
 WEBSITE CONTENT:
 {coach['website_text'][:2000] if coach['website_text'] else 'No website content available.'}
 
 INSTRUCTIONS:
 1. Read the website content carefully
-2. Pick one specific, concrete detail — a real result, athlete name, race, place, or decision the coach made
+2. Pick one specific, concrete detail — a real result, athlete name, race, place, or a choice the {recipient_desc} made
 3. Write a 3-sentence Instagram DM from {SENDER_NAME}
 
 DM RULES:
-- Sentence 1: a genuine observation using the specific detail. Must reference something concrete (name, place, number, event). NOT a compliment.
-- Sentence 2: who you are + what augo does in plain words. One short sentence.
-- Sentence 3: a casual CTA — "up for a quick chat?" or "would love to hear how you manage it"
+- Sentence 1: a genuine, specific observation. Must name something real (a person, place, number, event). NOT a compliment.
+- Sentence 2: one short sentence — who Bruna is + the core augo value framed around their specific situation (athlete count, tools, admin pain). Do NOT list features.
+- Sentence 3: a question that makes them reflect on their own workflow. Examples: {cta_examples}
 - No sign-off. 3 sentences only.
 
-BAD: "Noticed you're managing 15 athletes focused on 70.3. I'm Bruna, we help coaches bring everything into one place. Up for a quick chat?"
-GOOD: "Saw your athlete Emma ran a 4:32 at Maastricht 70.3 last month. I'm Bruna, I'm building a tool to help coaches keep athlete messages and training data in one spot. Would love to hear how you currently manage it all."
+BAD sentence 2: "I'm Bruna, we help coaches bring everything into one place."
+GOOD sentence 2 (solo coach ~20 athletes): "I'm Bruna, I'm building something that tells coaches which of their 20 athletes needs attention that day — without opening five different apps."
+GOOD sentence 2 (coach at ceiling): "I'm Bruna, I'm building a tool for coaches who've quietly stopped taking new athletes because the admin doesn't leave room."
 
-{WRITING_RULES}
+{_writing_rules()}
 
 Return ONLY valid JSON, no markdown:
 {{
-  "hook_type": "athlete_achievement | their_race | content_published | coaching_philosophy | fallback",
+  "hook_type": "athlete_achievement | their_race | content_published | coaching_philosophy | club_event | fallback",
   "hook_text": "the specific opening sentence used",
   "research_notes": "2-line summary: who they are and what makes them distinctive",
   "dm_message": "the full DM text"
@@ -324,36 +412,66 @@ Return ONLY valid JSON, no markdown:
 
 
 def draft_email(coach: dict) -> dict:
+    is_club = coach.get("entity_type") == "club"
+    recipient_desc = "sports club" if is_club else "coach"
+    athlete_count  = coach.get("athlete_count_signal", "unknown")
+    tools          = coach.get("tools_mentioned", [])
+    tools_str      = ", ".join(tools) if tools else "not mentioned"
+
+    if is_club:
+        pain_context = (
+            f"This is a sports club (member count: {athlete_count}). "
+            "Club pain points: fragmented communication across many coaches and members, "
+            "no single view of who needs a check-in, and coaches mixing personal and club WhatsApp."
+        )
+        cta_ask = "30 minutes to learn how your coaching team currently handles athlete communication"
+    else:
+        pain_context = (
+            f"This coach has approximately {athlete_count} athletes. "
+            f"Tools visible on their site: {tools_str}. "
+            "Coaches at this scale typically spend 4-10h/week on admin across 5-7 disconnected tools. "
+            "Many have quietly capped their roster because more athletes means more admin, not more income."
+        )
+        cta_ask = "30 minutes to understand how you currently manage everything across your athletes"
+
     prompt = f"""
 You are writing a cold outreach email on behalf of {SENDER_NAME}, {SENDER_ROLE}.
 
-{AUGO_PITCH}
+WHAT AUGO DOES:
+{AUGO_PITCH_FULL}
 
-COACH DETAILS:
+KEY POSITIONING:
+- The core problem augo solves: coaches cap at 5-30 athletes to protect quality because admin overwhelms them
+- augo tells coaches WHICH athlete needs attention right now — replacing the WhatsApp-TP-memory juggle
+- It is NOT an AI coach and does NOT replace TrainingPeaks
+- Bruna is a runner and running coach herself — this is peer to peer
+
+CONTEXT ABOUT THIS {recipient_desc.upper()}:
 Name: {coach['name']}
+{pain_context}
 
 WEBSITE CONTENT:
 {coach['website_text'][:2000] if coach['website_text'] else 'No website content available.'}
 
 INSTRUCTIONS:
 1. Read the website content carefully
-2. Pick one specific, concrete detail — a real result, athlete name, race, place, or decision the coach made
+2. Pick one specific, concrete detail — a real result, athlete name, race, event, or decision the {recipient_desc} made
 3. Write a short cold email from {SENDER_NAME}
 
 EMAIL RULES:
-- Subject: 4-6 words, reference something specific
-- Opening: one sentence using the specific detail
-- Who I am: "{SENDER_NAME}, co-founder of augo" + what augo does in plain words
-- CTA: ask for 30 minutes to learn about their coaching workflow
+- Subject: 4-6 words, reference something specific from their site
+- Opening: one sentence using the specific concrete detail (not a compliment)
+- Body paragraph: briefly introduce Bruna + frame augo around the pain this {recipient_desc} likely feels based on their situation. Don't list features. Reference their approximate scale or tools if you know them.
+- CTA: ask for {cta_ask}
 - Sign-off: "{SENDER_NAME}" only
-- Body: under 120 words
+- Total body: under 120 words
 - Tone: peer-to-peer, not a sales pitch
 
-{WRITING_RULES}
+{_writing_rules()}
 
 Return ONLY valid JSON, no markdown:
 {{
-  "hook_type": "athlete_achievement | their_race | content_published | coaching_philosophy | fallback",
+  "hook_type": "athlete_achievement | their_race | content_published | coaching_philosophy | club_event | fallback",
   "hook_text": "the specific opening sentence used",
   "research_notes": "2-line summary: who they are and what makes them distinctive",
   "subject": "the subject line",
@@ -371,59 +489,61 @@ Return ONLY valid JSON, no markdown:
 
 FAKE_COACHES = [
     {
-        "name":          "Jan de Vries",
-        "website":       "https://jancoaching.nl",
-        "channel":       "instagram",
-        "instagram_url": "https://instagram.com/jandevries_tri",
-        "facebook_url":  "",
-        "phone":         "",
-        "email":         "",
+        "name":                 "Jan de Vries",
+        "entity_type":          "coach",
+        "athlete_count_signal": "~15 athletes",
+        "tools_mentioned":      ["TrainingPeaks", "WhatsApp"],
+        "website":              "https://jancoaching.nl",
+        "channel":              "instagram",
+        "instagram_url":        "https://instagram.com/jandevries_tri",
+        "facebook_url":         "",
+        "phone":                "",
+        "email":                "",
         "website_text": (
             "Jan de Vries is a triathlon coach based in Amsterdam. "
             "This month his athlete Emma Bakker finished Ironman 70.3 Maastricht in 4:32, a new personal best. "
             "Jan has been coaching Emma for two years, building her race-day execution from scratch. "
             "He coaches 15 athletes individually, all focused on the 70.3 distance. "
-            "Former competitive swimmer who transitioned to triathlon coaching in 2012."
+            "Former competitive swimmer who transitioned to triathlon coaching in 2012. "
+            "Training plans are delivered through TrainingPeaks. Athlete communication via WhatsApp."
         ),
-    }
+    },
+    {
+        "name":                 "Zürich Triathlon Club",
+        "entity_type":          "club",
+        "athlete_count_signal": "200+ members",
+        "tools_mentioned":      ["WhatsApp", "Strava"],
+        "website":              "https://zuerich-tri.ch",
+        "channel":              "email",
+        "instagram_url":        "",
+        "facebook_url":         "",
+        "phone":                "",
+        "email":                "info@zuerich-tri.ch",
+        "website_text": (
+            "Zürich Triathlon Club was founded in 1998 and has over 200 active members. "
+            "40 members competed at Zürich Triathlon last summer, with 8 podium finishes. "
+            "The club runs weekly coached swim, bike, and run sessions and an annual training camp in Mallorca. "
+            "Coaches coordinate sessions via WhatsApp groups. Members track training on Strava. "
+            "Membership is open to all levels from beginner to elite."
+        ),
+    },
 ]
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    from attio import get_existing_domains, push_coach as attio_push
+
     print("\n=== augo Coach Outreach Pipeline ===\n")
 
-    test_mode  = "--test"      in sys.argv
-    fetch_mode = "--fetch"     in sys.argv
-    from_file  = "--from-file" in sys.argv
-
-    seen = load_seen()
+    test_mode = "--test"      in sys.argv
+    from_file = "--from-file" in sys.argv
 
     if test_mode:
         print("TEST MODE — using fake coach data, no Exa.\n")
         coaches_data = FAKE_COACHES
         query = "test"
-
-    elif fetch_mode:
-        query = input("What do you want to search for?\n> ").strip()
-        while not query:
-            query = input("Please enter a search query\n> ").strip()
-        limit_input = input("\nHow many coaches? (max 20, default: 5)\n> ").strip()
-        try:
-            limit = min(int(limit_input), 20) if limit_input else 5
-        except ValueError:
-            limit = 5
-
-        raw_coaches  = find_coaches(query, limit)
-        coaches_data = [research_coach(c, seen) for c in raw_coaches]
-        coaches_data = [c for c in coaches_data if c]
-
-        with open("coaches.json", "w") as f:
-            json.dump(coaches_data, f, indent=2)
-        print(f"\n✓ {len(coaches_data)} coaches saved to coaches.json")
-        print(f"  Run with --from-file to draft messages without calling Exa again.")
-        return
 
     elif from_file:
         if not os.path.exists("coaches.json"):
@@ -444,24 +564,29 @@ def main():
         except ValueError:
             limit = 10
 
-        raw_coaches  = find_coaches(query, limit)
-        coaches_data = [research_coach(c, seen) for c in raw_coaches]
-        coaches_data = [c for c in coaches_data if c]
+        country_code = country_from_query(query)
 
-    # Deduplicate within the same batch
-    seen_names, unique = set(), []
-    for c in coaches_data:
-        key = seen_key(c["name"], c.get("email", ""))
-        if key not in seen_names:
-            seen_names.add(key)
-            unique.append(c)
-    coaches_data = unique
+        print("\nFetching existing coaches from Attio...")
+        existing_domains = get_existing_domains()
+        if existing_domains:
+            print(f"  Excluding {len(existing_domains)} already-found domains from Exa search\n")
 
-    slug        = re.sub(r"[\s]+", "_", re.sub(r"[^\w\s-]", "", query.lower()).strip())
-    output_file = f"{slug}.csv"
-    results     = []
+        candidates   = find_coaches(query, limit, extra_exclude=existing_domains)
+        coaches_data = []
+        for candidate in candidates:
+            if len(coaches_data) >= limit:
+                break
+            page = fetch_page_content(candidate)
+            if not page:
+                continue
+            for coach in research_coach(page):
+                coach["country_code"] = country_code
+                coaches_data.append(coach)
+                if len(coaches_data) >= limit:
+                    break
 
     print(f"Drafting messages...\n")
+    pushed = 0
 
     for i, coach_data in enumerate(coaches_data, 1):
         print(f"  [{i}/{len(coaches_data)}] {coach_data['name']}...", end=" ", flush=True)
@@ -477,25 +602,19 @@ def main():
                 subject = ""
                 message = draft.get("dm_message", "")
         except Exception as e:
-            print(f"✗ {e}")
+            print(f"✗ drafting failed: {e}")
             continue
 
-        instagram = coach_data.get("instagram_url", "")
-        email_val = coach_data.get("email", "")
-        phone_val = coach_data.get("phone", "")
-        facebook  = coach_data.get("facebook_url", "")
-        website   = coach_data.get("website", "")
-
-        socials = []
-        if instagram: socials.append(f"Instagram: {instagram}")
-        if email_val: socials.append(f"Email:     {email_val}")
-        if phone_val: socials.append(f"Phone:     {phone_val}")
-        if facebook:  socials.append(f"Facebook:  {facebook}")
-        if website:   socials.append(f"Website:   {website}")
-
-        color = CHANNEL_COLOR.get(channel, RESET)
         research_notes = draft.get("research_notes", "")
 
+        socials = []
+        if coach_data.get("instagram_url"): socials.append(f"Instagram: {coach_data['instagram_url']}")
+        if coach_data.get("email"):         socials.append(f"Email:     {coach_data['email']}")
+        if coach_data.get("phone"):         socials.append(f"Phone:     {coach_data['phone']}")
+        if coach_data.get("facebook_url"):  socials.append(f"Facebook:  {coach_data['facebook_url']}")
+        if coach_data.get("website"):       socials.append(f"Website:   {coach_data['website']}")
+
+        color = CHANNEL_COLOR.get(channel, RESET)
         print(f"✓")
         print(f"\n{'='*60}")
         print(f"  {BOLD}{coach_data['name']}{RESET}")
@@ -509,37 +628,14 @@ def main():
         print(f"\n  Message:\n  {message.replace(chr(10), chr(10) + '  ')}")
         print(f"{'='*60}\n")
 
-        seen.add(seen_key(coach_data["name"], coach_data.get("email", "")))
-        save_seen(seen)
+        ok = attio_push(coach_data, message, subject=subject, research_notes=research_notes)
+        if ok:
+            pushed += 1
+            print(f"  → Pushed to Attio Sales Pipeline")
+        else:
+            print(f"  → Attio push failed")
 
-        results.append({
-            "name":           coach_data["name"],
-            "channel":        channel,
-            "instagram_url":  coach_data.get("instagram_url", ""),
-            "phone":          coach_data.get("phone", ""),
-            "email":          coach_data.get("email", ""),
-            "facebook_url":   coach_data.get("facebook_url", ""),
-            "website":        coach_data["website"],
-            "research_notes": draft["research_notes"],
-            "subject":        subject,
-            "message":        message,
-        })
-
-    if results:
-        with open(output_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=results[0].keys())
-            writer.writeheader()
-            writer.writerows(results)
-
-    channels = {}
-    for r in results:
-        channels[r["channel"]] = channels.get(r["channel"], 0) + 1
-
-    print(f"\nDone — {len(results)} coaches processed")
-    for ch, count in channels.items():
-        print(f"  {ch}: {count}")
-    if results:
-        print(f"  CSV: {output_file}")
+    print(f"\nDone — {pushed}/{len(coaches_data)} coaches pushed to Attio")
 
 
 if __name__ == "__main__":
