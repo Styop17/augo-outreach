@@ -109,8 +109,8 @@ def push_coach(coach: dict, message: str, subject: str = "", research_notes: str
         values["phone_numbers"] = [{"original_phone_number": coach["phone"]}]
     if coach.get("instagram_url"):
         values["instagram"] = [{"value": coach["instagram_url"]}]
-    if coach.get("facebook_url"):
-        values["facebook"] = [{"value": coach["facebook_url"]}]
+    if coach.get("linkedin_url"):
+        values["linkedin"] = [{"value": coach["linkedin_url"]}]
 
     desc_parts = []
     if coach.get("entity_type"):

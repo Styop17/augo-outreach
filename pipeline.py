@@ -48,7 +48,7 @@ CHANNEL_COLOR = {
     "instagram":        GREEN,
     "email":            GREEN,
     "phone":            YELLOW,
-    "facebook":         YELLOW,
+    "linkedin":         YELLOW,
     "no_contact_found": RED,
 }
 
@@ -157,11 +157,11 @@ def find_contact_info(page_text: str, website_url: str) -> dict:
             except Exception:
                 pass
 
-    # Facebook
-    facebook_url = ""
-    h = first_match(r'facebook\.com/([\w.]+)/?', search_text)
-    if h and h.lower() not in SKIP_HANDLES and len(h) >= 5:
-        facebook_url = f"https://facebook.com/{h}"
+    # LinkedIn
+    linkedin_url = ""
+    h = first_match(r'linkedin\.com/in/([\w\-]+)/?', search_text)
+    if h and h.lower() not in SKIP_HANDLES:
+        linkedin_url = f"https://linkedin.com/in/{h}"
 
     # Phone — international format only
     phone = ""
@@ -182,22 +182,24 @@ def find_contact_info(page_text: str, website_url: str) -> dict:
         email = candidate
         break
 
-    # Channel priority: instagram > phone > email > facebook
+    # Channel priority: instagram > phone > email > linkedin > website
     if instagram_url:
         channel = "instagram"
     elif phone:
         channel = "phone"
     elif email:
         channel = "email"
-    elif facebook_url:
-        channel = "facebook"
+    elif linkedin_url:
+        channel = "linkedin"
+    elif website_url:
+        channel = "website"
     else:
         channel = "no_contact_found"
 
     return {
         "channel":       channel,
         "instagram_url": instagram_url,
-        "facebook_url":  facebook_url,
+        "linkedin_url":  linkedin_url,
         "phone":         phone,
         "email":         email,
     }
@@ -270,7 +272,7 @@ def research_coach(page) -> list:
         "website_text":         page_text[:3000],
         "channel":              contact["channel"],
         "instagram_url":        contact["instagram_url"],
-        "facebook_url":         contact["facebook_url"],
+        "linkedin_url":         contact["linkedin_url"],
         "phone":                contact["phone"],
         "email":                contact["email"],
     }
@@ -342,9 +344,9 @@ def draft_dm(coach: dict) -> dict:
             "coaches juggling WhatsApp groups, and no single view of who needs attention."
         )
         cta_examples = (
-            "curious how your coaches currently keep track of all that?"
+            "Worth 30 minutes to show you what that looks like for a club your size?"
             " / "
-            "what does a typical race week look like for your coaching team?"
+            "Happy to jump on a quick call this week if it sounds relevant?"
         )
     else:
         pain_context = (
@@ -355,13 +357,43 @@ def draft_dm(coach: dict) -> dict:
             "and they've often quietly capped their roster to protect quality."
         )
         cta_examples = (
-            "curious what your Monday morning looks like?"
+            "Worth 30 minutes to show you what that looks like in practice?"
             " / "
-            "what does your week look like when you're managing all of that?"
+            "Happy to jump on a quick call this week if it sounds relevant?"
+        )
+
+    channel = coach.get("channel", "instagram")
+    if channel == "website":
+        format_label   = "contact form message"
+        format_note    = "This will be sent via a website contact form — slightly more formal than a DM, but still short and conversational. No subject line needed."
+        format_rules   = (
+            "- Sentence 1: a genuine, specific observation about them. Must name something real. NOT a compliment.\n"
+            "- Sentence 2: who Bruna is + core augo value framed around their situation. Do NOT list features.\n"
+            f"- Sentence 3: ask for 30 minutes of their time / a quick call. Examples: {cta_examples}\n"
+            "- Sign off with just 'Bruna' on a new line. 3 sentences + sign-off only."
+        )
+    elif channel == "linkedin":
+        format_label   = "cold LinkedIn message"
+        format_note    = "This will be sent as a LinkedIn direct message — slightly more professional tone than Instagram but still concise and personal."
+        format_rules   = (
+            "- Sentence 1: a genuine, specific observation. Must name something real. NOT a compliment.\n"
+            "- Sentence 2: who Bruna is + core augo value framed around their situation. Do NOT list features.\n"
+            f"- Sentence 3: ask for 30 minutes of their time / a quick call. Examples: {cta_examples}\n"
+            "- No sign-off. 3 sentences only."
+        )
+    else:
+        format_label   = "cold Instagram DM"
+        format_note    = "This will be sent as an Instagram direct message — keep it very short and conversational."
+        format_rules   = (
+            f"- Sentence 1: a genuine, specific observation. Must name something real (a person, place, number, event). NOT a compliment.\n"
+            f"- Sentence 2: one short sentence — who Bruna is + the core augo value framed around their specific situation (athlete count, tools, admin pain). Do NOT list features.\n"
+            f"- Sentence 3: ask for 30 minutes of their time / a quick call. Examples: {cta_examples}\n"
+            f"- No sign-off. 3 sentences only."
         )
 
     prompt = f"""
-You are writing a cold Instagram DM on behalf of {SENDER_NAME}, {SENDER_ROLE}.
+You are writing a {format_label} on behalf of {SENDER_NAME}, {SENDER_ROLE}.
+{format_note}
 
 WHAT AUGO DOES:
 {AUGO_PITCH_SHORT}
@@ -382,13 +414,10 @@ WEBSITE CONTENT:
 INSTRUCTIONS:
 1. Read the website content carefully
 2. Pick one specific, concrete detail — a real result, athlete name, race, place, or a choice the {recipient_desc} made
-3. Write a 3-sentence Instagram DM from {SENDER_NAME}
+3. Write a {format_label} from {SENDER_NAME}
 
-DM RULES:
-- Sentence 1: a genuine, specific observation. Must name something real (a person, place, number, event). NOT a compliment.
-- Sentence 2: one short sentence — who Bruna is + the core augo value framed around their specific situation (athlete count, tools, admin pain). Do NOT list features.
-- Sentence 3: a question that makes them reflect on their own workflow. Examples: {cta_examples}
-- No sign-off. 3 sentences only.
+MESSAGE RULES:
+{format_rules}
 
 BAD sentence 2: "I'm Bruna, we help coaches bring everything into one place."
 GOOD sentence 2 (solo coach ~20 athletes): "I'm Bruna, I'm building something that tells coaches which of their 20 athletes needs attention that day — without opening five different apps."
@@ -401,7 +430,7 @@ Return ONLY valid JSON, no markdown:
   "hook_type": "athlete_achievement | their_race | content_published | coaching_philosophy | club_event | fallback",
   "hook_text": "the specific opening sentence used",
   "research_notes": "2-line summary: who they are and what makes them distinctive",
-  "dm_message": "the full DM text"
+  "dm_message": "the full {format_label} text"
 }}
 """
     result = json.loads(_call_claude(prompt))
@@ -496,7 +525,7 @@ FAKE_COACHES = [
         "website":              "https://jancoaching.nl",
         "channel":              "instagram",
         "instagram_url":        "https://instagram.com/jandevries_tri",
-        "facebook_url":         "",
+        "linkedin_url":         "",
         "phone":                "",
         "email":                "",
         "website_text": (
@@ -516,7 +545,7 @@ FAKE_COACHES = [
         "website":              "https://zuerich-tri.ch",
         "channel":              "email",
         "instagram_url":        "",
-        "facebook_url":         "",
+        "linkedin_url":         "",
         "phone":                "",
         "email":                "info@zuerich-tri.ch",
         "website_text": (
@@ -539,6 +568,7 @@ def main():
 
     test_mode = "--test"      in sys.argv
     from_file = "--from-file" in sys.argv
+    dry_run   = "--dry-run"   in sys.argv
 
     if test_mode:
         print("TEST MODE — using fake coach data, no Exa.\n")
@@ -558,7 +588,7 @@ def main():
         query = input("What do you want to search for?\n> ").strip()
         while not query:
             query = input("Please enter a search query\n> ").strip()
-        limit_input = input("\nHow many coaches? (max 20, default: 10)\n> ").strip()
+        limit_input = input("\nHow many? (max 20, default: 10)\n> ").strip()
         try:
             limit = min(int(limit_input), 20) if limit_input else 10
         except ValueError:
@@ -573,9 +603,15 @@ def main():
 
         candidates   = find_coaches(query, limit, extra_exclude=existing_domains)
         coaches_data = []
+        seen_root_domains = set()
         for candidate in candidates:
             if len(coaches_data) >= limit:
                 break
+            from urllib.parse import urlparse
+            root = urlparse(candidate.url).netloc.replace("www.", "").lower()
+            if root in seen_root_domains:
+                continue
+            seen_root_domains.add(root)
             page = fetch_page_content(candidate)
             if not page:
                 continue
@@ -611,7 +647,7 @@ def main():
         if coach_data.get("instagram_url"): socials.append(f"Instagram: {coach_data['instagram_url']}")
         if coach_data.get("email"):         socials.append(f"Email:     {coach_data['email']}")
         if coach_data.get("phone"):         socials.append(f"Phone:     {coach_data['phone']}")
-        if coach_data.get("facebook_url"):  socials.append(f"Facebook:  {coach_data['facebook_url']}")
+        if coach_data.get("linkedin_url"):  socials.append(f"LinkedIn:  {coach_data['linkedin_url']}")
         if coach_data.get("website"):       socials.append(f"Website:   {coach_data['website']}")
 
         color = CHANNEL_COLOR.get(channel, RESET)
@@ -628,14 +664,20 @@ def main():
         print(f"\n  Message:\n  {message.replace(chr(10), chr(10) + '  ')}")
         print(f"{'='*60}\n")
 
-        ok = attio_push(coach_data, message, subject=subject, research_notes=research_notes)
-        if ok:
-            pushed += 1
-            print(f"  → Pushed to Attio Sales Pipeline")
+        if dry_run:
+            print(f"  → Dry run — skipping Attio push")
         else:
-            print(f"  → Attio push failed")
+            ok = attio_push(coach_data, message, subject=subject, research_notes=research_notes)
+            if ok:
+                pushed += 1
+                print(f"  → Pushed to Attio Sales Pipeline")
+            else:
+                print(f"  → Attio push failed")
 
-    print(f"\nDone — {pushed}/{len(coaches_data)} coaches pushed to Attio")
+    if dry_run:
+        print(f"\nDone — {len(coaches_data)} coaches found (dry run, nothing pushed to Attio)")
+    else:
+        print(f"\nDone — {pushed}/{len(coaches_data)} coaches pushed to Attio")
 
 
 if __name__ == "__main__":

@@ -4,9 +4,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-for _key in ["EXA_API_KEY", "ANTHROPIC_API_KEY", "ATTIO_API_KEY"]:
-    if _key in st.secrets and not os.environ.get(_key):
-        os.environ[_key] = st.secrets[_key]
+try:
+    for _key in ["EXA_API_KEY", "ANTHROPIC_API_KEY", "ATTIO_API_KEY"]:
+        if _key in st.secrets and not os.environ.get(_key):
+            os.environ[_key] = st.secrets[_key]
+except Exception:
+    pass  # running locally with .env — keys already loaded by pipeline
 
 from pipeline import find_coaches, fetch_page_content, research_coach, draft_email, draft_dm, country_from_query
 from attio import get_existing_domains, push_coach
@@ -17,7 +20,11 @@ if not st.session_state.get("authenticated"):
     st.title("augo Coach Outreach")
     password = st.text_input("Password", type="password")
     if st.button("Enter"):
-        if password == st.secrets.get("APP_PASSWORD", ""):
+        try:
+            app_password = st.secrets.get("APP_PASSWORD", "")
+        except Exception:
+            app_password = os.environ.get("APP_PASSWORD", "")
+        if password == app_password:
             st.session_state.authenticated = True
             st.rerun()
         else:
@@ -25,16 +32,17 @@ if not st.session_state.get("authenticated"):
     st.stop()
 
 st.title("augo Coach Outreach")
-st.caption("Find endurance coaches, draft personalised messages, export to CSV.")
+st.caption("Find endurance coaches and clubs, draft personalised messages, push to Attio.")
 
 query = st.text_input("Search query", placeholder="triathlon coaches in Amsterdam")
-limit = st.slider("Coaches to find", min_value=1, max_value=20, value=5)
+limit = st.slider("How many to find", min_value=1, max_value=20, value=5)
 
 CHANNEL_BADGE = {
     "instagram": "🟢",
     "email":     "🟢",
     "phone":     "🟡",
-    "facebook":  "🟡",
+    "linkedin":  "🟡",
+    "website":   "🟡",
 }
 
 
@@ -55,10 +63,17 @@ def run_pipeline(query, limit):
 
         progress = st.progress(0)
         coaches_found = 0
+        seen_root_domains = set()
 
         for candidate in candidates:
             if coaches_found >= limit:
                 break
+
+            from urllib.parse import urlparse
+            root = urlparse(candidate.url).netloc.replace("www.", "").lower()
+            if root in seen_root_domains:
+                continue
+            seen_root_domains.add(root)
 
             page = fetch_page_content(candidate)
             if not page:
@@ -105,7 +120,7 @@ def run_pipeline(query, limit):
                     "instagram_url":        coach_data.get("instagram_url", ""),
                     "phone":                coach_data.get("phone", ""),
                     "email":                coach_data.get("email", ""),
-                    "facebook_url":         coach_data.get("facebook_url", ""),
+                    "linkedin_url":         coach_data.get("linkedin_url", ""),
                     "website":              coach_data.get("website", ""),
                     "research_notes":       research_notes,
                     "subject":              subject,
@@ -139,10 +154,11 @@ for i, r in enumerate(st.session_state.results):
                 st.markdown(f"✉️ {r['email']}")
             if r["phone"]:
                 st.markdown(f"📞 {r['phone']}")
-            if r["facebook_url"]:
-                st.markdown(f"[Facebook]({r['facebook_url']})")
+            if r["linkedin_url"]:
+                st.markdown(f"[LinkedIn]({r['linkedin_url']})")
             if r["website"]:
-                st.markdown(f"[Website]({r['website']})")
+                label = "Contact via website" if r["channel"] == "website" else "Website"
+                st.markdown(f"[{label}]({r['website']})")
             if r["research_notes"]:
                 st.divider()
                 st.caption(r["research_notes"])
