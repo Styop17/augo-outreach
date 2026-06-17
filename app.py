@@ -11,7 +11,7 @@ try:
 except Exception:
     pass  # running locally with .env — keys already loaded by pipeline
 
-from pipeline import find_coaches, fetch_page_content, research_coach, draft_email, draft_dm, country_from_query
+from pipeline import find_coaches, fetch_page_content, research_coach, draft_email, draft_dm, country_from_query, _query_wants_clubs
 from attio import get_existing_domains, push_coach
 
 st.set_page_config(page_title="augo Outreach", page_icon="🏃", layout="wide")
@@ -58,6 +58,7 @@ def run_pipeline(query, limit):
         if existing_domains:
             st.write(f"Excluding {len(existing_domains)} already-found domains in this country.")
 
+        allow_clubs = _query_wants_clubs(query)
         candidates = find_coaches(query, limit, extra_exclude=existing_domains)
         st.write(f"Found {len(candidates)} candidate pages — fetching until {limit} coaches found...")
 
@@ -79,7 +80,7 @@ def run_pipeline(query, limit):
             if not page:
                 continue
 
-            coaches_from_page = research_coach(page)
+            coaches_from_page = research_coach(page, allow_clubs=allow_clubs)
             if not coaches_from_page:
                 continue
 

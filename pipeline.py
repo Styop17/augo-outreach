@@ -251,7 +251,13 @@ Definitions:
     return parsed
 
 
-def research_coach(page) -> list:
+def _query_wants_clubs(query: str) -> bool:
+    keywords = ["club", "clubs", "group", "groups", "team", "teams"]
+    q = query.lower()
+    return any(k in q for k in keywords)
+
+
+def research_coach(page, allow_clubs: bool = False) -> list:
     page_text = page.text or ""
     page_url  = page.url or ""
 
@@ -259,6 +265,8 @@ def research_coach(page) -> list:
 
     entity_type = info.get("entity_type", "neither")
     if entity_type == "neither" or not info.get("name"):
+        return []
+    if entity_type == "club" and not allow_clubs:
         return []
 
     name    = info.get("name", "")
@@ -606,6 +614,7 @@ def main():
         if existing_domains:
             print(f"  Excluding {len(existing_domains)} already-found domains in this country from Exa search\n")
 
+        allow_clubs  = _query_wants_clubs(query)
         candidates   = find_coaches(query, limit, extra_exclude=existing_domains)
         coaches_data = []
         seen_root_domains = set()
@@ -620,7 +629,7 @@ def main():
             page = fetch_page_content(candidate)
             if not page:
                 continue
-            for coach in research_coach(page):
+            for coach in research_coach(page, allow_clubs=allow_clubs):
                 coach["country_code"] = country_code
                 coaches_data.append(coach)
                 if len(coaches_data) >= limit:
