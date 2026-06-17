@@ -281,9 +281,14 @@ def research_coach(page) -> list:
         named_coaches = info.get("coaches", [])
         if not named_coaches:
             return []
+        # Individual coaches extracted from a club page share the club's contact details,
+        # but the club's Instagram/LinkedIn/phone are not their personal accounts.
+        # Keep only the website so we don't DM the club account on their behalf.
+        club_shared = {**shared, "instagram_url": "", "linkedin_url": "", "phone": "",
+                       "email": "", "channel": "website"}
         return [
             {"name": c["name"], "role": c.get("role", ""), "club_name": name,
-             "entity_type": "coach", **shared}
+             "entity_type": "coach", **club_shared}
             for c in named_coaches[:3]
         ]
 
