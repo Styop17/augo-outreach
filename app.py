@@ -54,9 +54,9 @@ def run_pipeline(query, limit):
     with status:
         country_code = country_from_query(query)
         st.write("Checking Attio for already-found coaches...")
-        existing_domains = get_existing_domains()
+        existing_domains = get_existing_domains(country_code=country_code)
         if existing_domains:
-            st.write(f"Excluding {len(existing_domains)} domains already in Attio.")
+            st.write(f"Excluding {len(existing_domains)} already-found domains in this country.")
 
         candidates = find_coaches(query, limit, extra_exclude=existing_domains)
         st.write(f"Found {len(candidates)} candidate pages — fetching until {limit} coaches found...")

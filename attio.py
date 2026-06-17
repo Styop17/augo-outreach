@@ -19,8 +19,9 @@ def _h():
     }
 
 
-def get_existing_domains() -> list:
-    """Return website domains of coaches already in the Sales Pipeline list."""
+def get_existing_domains(country_code: str = "") -> list:
+    """Return website domains already in the Sales Pipeline list.
+    If country_code is provided, only return domains for entries from that country."""
     domains = []
     offset  = 0
 
@@ -41,6 +42,15 @@ def get_existing_domains() -> list:
             record_id = entry.get("parent_record_id")
             if not record_id or not isinstance(record_id, str):
                 continue
+
+            # Filter by country if specified
+            if country_code:
+                entry_country = ""
+                for loc in entry.get("entry_values", {}).get("country", []):
+                    entry_country = loc.get("country_code", "")
+                    break
+                if entry_country.upper() != country_code.upper():
+                    continue
 
             person_resp = requests.get(
                 f"{BASE}/objects/{PEOPLE_OBJECT}/records/{record_id}",

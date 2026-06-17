@@ -597,9 +597,9 @@ def main():
         country_code = country_from_query(query)
 
         print("\nFetching existing coaches from Attio...")
-        existing_domains = get_existing_domains()
+        existing_domains = get_existing_domains(country_code=country_code)
         if existing_domains:
-            print(f"  Excluding {len(existing_domains)} already-found domains from Exa search\n")
+            print(f"  Excluding {len(existing_domains)} already-found domains in this country from Exa search\n")
 
         candidates   = find_coaches(query, limit, extra_exclude=existing_domains)
         coaches_data = []
