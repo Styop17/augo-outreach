@@ -667,12 +667,12 @@ def main():
         if dry_run:
             print(f"  → Dry run — skipping Attio push")
         else:
-            ok = attio_push(coach_data, message, subject=subject, research_notes=research_notes)
+            ok, err = attio_push(coach_data, message, subject=subject, research_notes=research_notes)
             if ok:
                 pushed += 1
                 print(f"  → Pushed to Attio Sales Pipeline")
             else:
-                print(f"  → Attio push failed")
+                print(f"  → Attio push failed: {err}")
 
     if dry_run:
         print(f"\nDone — {len(coaches_data)} coaches found (dry run, nothing pushed to Attio)")

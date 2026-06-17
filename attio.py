@@ -6,15 +6,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ATTIO_API_KEY   = os.getenv("ATTIO_API_KEY")
-BASE            = "https://api.attio.com/v2"
-LIST_SLUG       = "sales_pipeline"
-PEOPLE_OBJECT   = "people"
+BASE          = "https://api.attio.com/v2"
+LIST_SLUG     = "sales_pipeline"
+PEOPLE_OBJECT = "people"
 
 
 def _h():
+    key = os.getenv("ATTIO_API_KEY")
     return {
-        "Authorization": f"Bearer {ATTIO_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
@@ -99,8 +99,9 @@ def _upsert_company(name: str, website: str):
     return resp.json().get("data", {}).get("id", {}).get("record_id")
 
 
-def push_coach(coach: dict, message: str, subject: str = "", research_notes: str = "") -> bool:
-    """Upsert Person in Attio, link to Company via website domain, add to Sales Pipeline list."""
+def push_coach(coach: dict, message: str, subject: str = "", research_notes: str = ""):
+    """Upsert Person in Attio, link to Company via website domain, add to Sales Pipeline list.
+    Returns (True, "") on success or (False, error_message) on failure."""
     values = {"name": _name_value(coach["name"])}
 
     if coach.get("email"):
@@ -127,7 +128,6 @@ def push_coach(coach: dict, message: str, subject: str = "", research_notes: str
     if desc_parts:
         values["description"] = [{"value": "\n".join(desc_parts)}]
 
-    # Link to Company via website domain (use club name if extracted from a club page)
     if coach.get("website"):
         company_name = coach.get("club_name") or coach["name"]
         company_id = _upsert_company(company_name, coach["website"])
@@ -148,12 +148,13 @@ def push_coach(coach: dict, message: str, subject: str = "", research_notes: str
             json={"data": {"values": values}},
         )
     if not resp.ok:
-        print(f"  Attio record failed for {coach['name']}: {resp.status_code} {resp.text[:200]}")
-        return False
+        err = f"Person record {resp.status_code}: {resp.text[:300]}"
+        print(f"  Attio record failed for {coach['name']}: {err}")
+        return False, err
 
     record_id = resp.json().get("data", {}).get("id", {}).get("record_id")
     if not record_id:
-        return False
+        return False, "No record_id returned"
 
     entry_resp = requests.post(
         f"{BASE}/lists/{LIST_SLUG}/entries",
@@ -175,7 +176,8 @@ def push_coach(coach: dict, message: str, subject: str = "", research_notes: str
         },
     )
     if not entry_resp.ok:
-        print(f"  Attio list entry failed for {coach['name']}: {entry_resp.status_code} {entry_resp.text[:200]}")
-        return False
+        err = f"List entry {entry_resp.status_code}: {entry_resp.text[:300]}"
+        print(f"  Attio list entry failed for {coach['name']}: {err}")
+        return False, err
 
-    return True
+    return True, ""

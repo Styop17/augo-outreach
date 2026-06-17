@@ -107,9 +107,9 @@ def run_pipeline(query, limit):
                     continue
 
                 research_notes = draft.get("research_notes", "")
-                ok = push_coach(coach_data, message, subject=subject, research_notes=research_notes)
+                ok, err = push_coach(coach_data, message, subject=subject, research_notes=research_notes)
                 if not ok:
-                    st.warning(f"Attio push failed for {coach_data['name']}")
+                    st.warning(f"Attio push failed for {coach_data['name']}: {err}")
 
                 results.append({
                     "name":                 coach_data["name"],
